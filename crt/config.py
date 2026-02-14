@@ -56,3 +56,14 @@ class CRTConfig:
     teacher_forcing_end: float = 0.0
     """Final teacher forcing probability after decay."""
 
+    num_countries: int = 1
+    """Number of distinct countries available for optional country-context embedding."""
+
+    use_country_context: bool = True
+    """If True, add learned country embeddings to history/future tokens."""
+
+    use_future_policy: bool = True
+    """If False, ablate policy conditioning by zeroing future and history policy inputs."""
+
+    rollout_training: bool = True
+    """If False, disable autoregressive rollout during training (teacher-forced parallel decode)."""

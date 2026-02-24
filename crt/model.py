@@ -73,6 +73,31 @@ class CRTModel(nn.Module):
         )
         
         self.pred_head = PredictionHead(config.d_model, config.d_y, task_type="regression")
+        self.country_emb = None
+        if getattr(config, "use_country_context", True):
+            num_countries = max(1, int(getattr(config, "num_countries", 1)))
+            self.country_emb = nn.Embedding(num_countries, config.d_model)
+
+    def _resolve_country_context(
+        self,
+        batch_size: int,
+        device: torch.device,
+        country_idx: Optional[torch.Tensor],
+    ) -> Optional[torch.Tensor]:
+        if self.country_emb is None:
+            return None
+
+        if country_idx is None:
+            country_idx = torch.zeros(batch_size, dtype=torch.long, device=device)
+        else:
+            country_idx = country_idx.to(device=device, dtype=torch.long).view(-1)
+            if country_idx.shape[0] != batch_size:
+                raise ValueError(
+                    f"country_idx batch mismatch: expected {batch_size}, got {country_idx.shape[0]}"
+                )
+
+        country_idx = torch.clamp(country_idx, min=0, max=self.country_emb.num_embeddings - 1)
+        return self.country_emb(country_idx)
     
     def forward(
         self,
@@ -82,7 +107,10 @@ class CRTModel(nn.Module):
         a_fut: torch.Tensor,
         y_fut: Optional[torch.Tensor] = None,
         teacher_forcing_prob: Optional[float] = None,
-        return_attention: bool = False
+        country_idx: Optional[torch.Tensor] = None,
+        use_future_policy: Optional[bool] = None,
+        rollout_training: Optional[bool] = None,
+        return_attention: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Forward pass.
@@ -95,16 +123,27 @@ class CRTModel(nn.Module):
         B, T, _ = x_hist.shape
         H = a_fut.shape[1]
         device = x_hist.device
+
+        if use_future_policy is None:
+            use_future_policy = getattr(self.config, "use_future_policy", True)
+        if rollout_training is None:
+            rollout_training = getattr(self.config, "rollout_training", True)
         
         is_training = y_fut is not None
         if teacher_forcing_prob is None:
             teacher_forcing_prob = self.config.teacher_forcing_start if is_training else 0.0
+
+        a_hist_used = a_hist if use_future_policy else torch.zeros_like(a_hist)
+        a_fut_used = a_fut if use_future_policy else torch.zeros_like(a_fut)
+        country_context = self._resolve_country_context(B, device, country_idx)
         
         h_tokens = build_history_tokens(
             x_hist, a_hist, y_hist,
             self.state_emb, self.action_emb, self.outcome_emb,
             self.W_h
         )
+        if country_context is not None:
+            h_tokens = h_tokens + country_context.unsqueeze(1)
         
         if return_attention:
             E_t, encoder_attn_dict = self.encoder(h_tokens, return_attention=True)
@@ -113,6 +152,32 @@ class CRTModel(nn.Module):
             encoder_attn_dict = None
         
         y_last = y_hist[:, -1:, :]
+        decoder_attn_dict = {"self_attn": [], "cross_attn": []}
+
+        if is_training and not rollout_training:
+            y_prev = y_fut if y_fut is not None else y_last.repeat(1, H, 1)
+            u_tilde = build_future_tokens(
+                a_fut_used, y_prev,
+                self.action_emb, self.outcome_emb,
+                self.W_u
+            )
+            if country_context is not None:
+                u_tilde = u_tilde + country_context.unsqueeze(1)
+
+            if return_attention:
+                D, decoder_attn_dict = self.decoder(u_tilde, E_t, return_attention=True)
+            else:
+                D = self.decoder(u_tilde, E_t)
+
+            y_pred = self.pred_head(D)
+            if return_attention:
+                attention_dict = {
+                    "encoder_attn": encoder_attn_dict["encoder_attn"] if encoder_attn_dict else [],
+                    "decoder_self_attn": decoder_attn_dict["self_attn"],
+                    "decoder_cross_attn": decoder_attn_dict["cross_attn"]
+                }
+                return y_pred, attention_dict
+            return y_pred
         
         if is_training:
             y_prev = y_last.repeat(1, H, 1)
@@ -125,13 +190,15 @@ class CRTModel(nn.Module):
                 
                 for h in range(H):
                     y_prev_so_far = torch.cat(y_prev_list, dim=1)
-                    a_fut_so_far = a_fut[:, :h+1, :]
+                    a_fut_so_far = a_fut_used[:, :h+1, :]
                     
                     u_tilde = build_future_tokens(
                         a_fut_so_far, y_prev_so_far,
                         self.action_emb, self.outcome_emb,
                         self.W_u
                     )
+                    if country_context is not None:
+                        u_tilde = u_tilde + country_context.unsqueeze(1)
                     
                     if return_attention:
                         D, decoder_attn_dict = self.decoder(u_tilde, E_t, return_attention=True)
@@ -159,10 +226,12 @@ class CRTModel(nn.Module):
                 return y_pred
             
             u_tilde = build_future_tokens(
-                a_fut, y_prev,
+                a_fut_used, y_prev,
                 self.action_emb, self.outcome_emb,
                 self.W_u
             )
+            if country_context is not None:
+                u_tilde = u_tilde + country_context.unsqueeze(1)
             
             if return_attention:
                 D, decoder_attn_dict = self.decoder(u_tilde, E_t, return_attention=True)
@@ -185,13 +254,15 @@ class CRTModel(nn.Module):
             
             for h in range(H):
                 y_prev_so_far = torch.cat(y_prev_list, dim=1)
-                a_fut_so_far = a_fut[:, :h+1, :]
+                a_fut_so_far = a_fut_used[:, :h+1, :]
                 
                 u_tilde = build_future_tokens(
                     a_fut_so_far, y_prev_so_far,
                     self.action_emb, self.outcome_emb,
                     self.W_u
                 )
+                if country_context is not None:
+                    u_tilde = u_tilde + country_context.unsqueeze(1)
                 
                 if return_attention:
                     D, decoder_attn_dict = self.decoder(u_tilde, E_t, return_attention=True)
@@ -217,8 +288,8 @@ class CRTModel(nn.Module):
         if return_attention:
             attention_dict = {
                 "encoder_attn": encoder_attn_dict["encoder_attn"] if encoder_attn_dict else [],
-                "decoder_self_attn": decoder_attn_dict["self_attn"] if 'decoder_attn_dict' in locals() else [],
-                "decoder_cross_attn": decoder_attn_dict["cross_attn"] if 'decoder_attn_dict' in locals() else []
+                "decoder_self_attn": decoder_attn_dict["self_attn"],
+                "decoder_cross_attn": decoder_attn_dict["cross_attn"]
             }
             return y_pred, attention_dict
         

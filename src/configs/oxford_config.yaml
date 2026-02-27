@@ -1,0 +1,41 @@
+dataset:
+  country_col: CountryName
+  date_col: Date
+  policy_cols:
+    - StringencyIndex_Average
+    - C1M_School closing
+    - C2M_Workplace closing
+    - C6M_Stay at home requirements
+  outcome_cols:
+    - new_cases_smoothed_per_million
+    - new_deaths_smoothed_per_million
+  state_cols: []
+  context_cols: []
+
+window:
+  history_len: 21
+  forecast_horizon: 14
+  stride: 7
+
+split:
+  strategy: time
+  train_fraction: 0.8
+  holdout_fraction: 0.2
+  seed: 42
+
+model:
+  d_model: 128
+  n_heads: 4
+  n_layers_enc: 3
+  n_layers_dec: 3
+  dropout: 0.1
+
+training:
+  batch_size: 64
+  epochs: 40
+  lr: 0.0001
+  teacher_forcing_start: 1.0
+  teacher_forcing_end: 0.0
+
+normalization:
+  log1p_outcomes: false

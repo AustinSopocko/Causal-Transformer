@@ -41,14 +41,28 @@ class HorizonBuckets:
 
 def default_horizon_buckets(horizon: int) -> HorizonBuckets:
     """
-    Defaults for epidemic forecasting with 14-step horizons:
-    - short: steps 1..4 (near-term)
-    - long:  steps 8..H (later-term)
-    - late headline metric: steps 11..H
+    Defaults for epidemic forecasting:
+    - 42-step horizon: short 1..7, long 22..H, late 32..H
+    - 28-step horizon: short 1..7, long 15..H, late 22..H
+    - 14-step horizon: short 1..4, long 8..H, late 12..H
+    Fallback: proportional split by horizon length.
     """
-    short_end = max(2, horizon // 3)
-    long_start = max(short_end + 1, horizon // 2 + 1)
-    late_start = max(long_start, horizon - max(3, horizon // 4) + 1)
+    if horizon >= 42:
+        short_end = 7
+        long_start = 22
+        late_start = 32
+    elif horizon >= 28:
+        short_end = 7
+        long_start = 15
+        late_start = 22
+    elif horizon >= 14:
+        short_end = 4
+        long_start = 8
+        late_start = 12
+    else:
+        short_end = max(2, horizon // 3)
+        long_start = max(short_end + 1, horizon // 2 + 1)
+        late_start = max(long_start, horizon - max(3, horizon // 4) + 1)
     buckets = HorizonBuckets(
         short_end=short_end,
         long_start=long_start,

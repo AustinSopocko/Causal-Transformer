@@ -1,0 +1,5 @@
+src/configs/stage3_filtered/00_control_filtered.yaml
+src/configs/stage3_filtered/01_huber_log1p_anchor.yaml
+src/configs/stage3_filtered/02_rollout_late_power.yaml
+src/configs/stage3_filtered/03_rollout_late_power_log1p.yaml
+src/configs/stage3_filtered/04_policy_weighted_late.yaml

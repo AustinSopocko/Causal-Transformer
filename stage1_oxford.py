@@ -32,7 +32,13 @@ from src.data.normalise import (
     fit_outcome_scaler,
     inverse_transform_outcomes,
 )
-from src.data.oxford_loader import clean_oxford, load_oxford_csv, select_features
+from src.data.oxford_loader import (
+    clean_oxford,
+    load_country_context_csv,
+    load_oxford_csv,
+    merge_country_context,
+    select_features,
+)
 from src.data.panel_windows import PanelWindows, build_country_index, make_windows
 from src.train.splits import time_split_window_indices
 
@@ -137,13 +143,35 @@ def build_split_windows(
     window_cfg = cfg["window"]
     split_cfg = cfg.get("split", {})
     norm_cfg = cfg.get("normalization", {})
+    context_cols = list(dataset_cfg.get("context_cols", []))
+    context_csv = dataset_cfg.get("country_context_csv", None)
+    split_no_future_overlap = bool(split_cfg.get("no_future_overlap", False))
 
     raw = load_oxford_csv(oxford_csv)
     cleaned = clean_oxford(
         raw,
         country_col=dataset_cfg.get("country_col", "CountryName"),
         date_col=dataset_cfg.get("date_col", "Date"),
+        country_code_col=dataset_cfg.get("country_code_col", "CountryCode"),
     )
+    if context_cols:
+        if not context_csv:
+            raise ValueError(
+                "dataset.context_cols is non-empty but dataset.country_context_csv is not set in config."
+            )
+        context_df = load_country_context_csv(context_csv)
+        cleaned, _ = merge_country_context(
+            panel_df=cleaned,
+            context_df=context_df,
+            context_cols=context_cols,
+            panel_country_col="country",
+            panel_country_code_col="country_code",
+            context_country_col=dataset_cfg.get("context_country_col", "country"),
+            context_country_code_col=dataset_cfg.get("context_country_code_col", "CountryCode"),
+            zscore=bool(dataset_cfg.get("context_zscore", True)),
+        )
+        state_cols = [*state_cols, *context_cols]
+    state_cols = list(dict.fromkeys(state_cols))
     state_cols_sel = [s for s in state_cols if s != "__dummy_state__"]
     panel_df = select_features(
         cleaned,
@@ -174,6 +202,7 @@ def build_split_windows(
     train_idx, test_idx, cutoff_dates = time_split_window_indices(
         windows.metadata,
         train_fraction=float(split_cfg.get("train_fraction", 0.8)),
+        no_future_overlap=split_no_future_overlap,
     )
     train_raw = windows.subset(train_idx)
     test_raw = windows.subset(test_idx)
@@ -190,6 +219,7 @@ def build_split_windows(
         "test_count": int(len(test_idx)),
         "cutoff_dates_count": int(len(cutoff_dates)),
         "log1p_outcomes": log1p,
+        "split_no_future_overlap": split_no_future_overlap,
     }
     return train_raw, test_raw, train_scaled, test_scaled, scaler, split_meta
 
@@ -292,6 +322,25 @@ def check_split_alignment(
     overlap = sorted(list(train_keys.intersection(test_keys)))
     overlap_pass = len(overlap) == 0
 
+    # stricter leakage check: overlap in full future date ranges
+    overlap_days_sum = 0
+    overlap_country_count = 0
+    for country, tr_group in train_meta.groupby("country", sort=True):
+        te_group = test_meta[test_meta["country"] == country]
+        if te_group.empty:
+            continue
+        tr_days = set()
+        te_days = set()
+        for _, r in tr_group.iterrows():
+            tr_days.update(pd.date_range(r["fut_start_date"], r["fut_end_date"], freq="D"))
+        for _, r in te_group.iterrows():
+            te_days.update(pd.date_range(r["fut_start_date"], r["fut_end_date"], freq="D"))
+        n_ov = len(tr_days.intersection(te_days))
+        overlap_days_sum += n_ov
+        if n_ov > 0:
+            overlap_country_count += 1
+    range_overlap_pass = overlap_days_sum == 0
+
     scaler_from_train = fit_outcome_scaler(train_raw, log1p=log1p_outcomes)
     mean_match = np.allclose(scaler_from_train.y_mean, scaler.y_mean, rtol=1e-5, atol=1e-7)
     std_match = np.allclose(scaler_from_train.y_std, scaler.y_std, rtol=1e-5, atol=1e-7)
@@ -311,6 +360,13 @@ def check_split_alignment(
             "details": {
                 "overlap_count": len(overlap),
                 "overlap_examples": overlap[:5],
+            },
+        },
+        "train_test_no_overlap_on_future_date_ranges": {
+            "pass": range_overlap_pass,
+            "details": {
+                "overlap_future_days_sum": int(overlap_days_sum),
+                "countries_with_overlap_days": int(overlap_country_count),
             },
         },
         "scaler_consistent_with_train_only": {

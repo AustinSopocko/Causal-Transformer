@@ -1,26 +1,35 @@
 dataset:
   country_col: CountryName
+  country_code_col: CountryCode
   date_col: Date
+  country_context_csv: ""
   policy_cols:
     - StringencyIndex_Average
     - C1M_School closing
     - C2M_Workplace closing
+    - C3M_Cancel public events
+    - C4M_Restrictions on gatherings
     - C6M_Stay at home requirements
+    - H6M_Facial Coverings
   outcome_cols:
     - new_cases_smoothed_per_million
     - new_deaths_smoothed_per_million
   state_cols: []
   context_cols: []
+  context_country_col: country
+  context_country_code_col: CountryCode
+  context_zscore: true
 
 window:
   history_len: 21
-  forecast_horizon: 14
+  forecast_horizon: 42
   stride: 7
 
 split:
   strategy: time
   train_fraction: 0.8
   holdout_fraction: 0.2
+  no_future_overlap: false
   seed: 42
 
 model:
@@ -29,6 +38,9 @@ model:
   n_layers_enc: 3
   n_layers_dec: 3
   dropout: 0.1
+  target_mode: residual_persistence
+  use_country_context: true
+  use_future_policy: true
 
 training:
   batch_size: 64
@@ -36,6 +48,10 @@ training:
   lr: 0.0001
   teacher_forcing_start: 1.0
   teacher_forcing_end: 0.0
+
+loss:
+  anchor_weight: 0.0
+  nonneg_weight: 0.0
 
 normalization:
   log1p_outcomes: false

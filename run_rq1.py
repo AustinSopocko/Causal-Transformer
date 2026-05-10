@@ -21,7 +21,13 @@ from crt.config import CRTConfig
 from crt.model import CRTModel
 from crt.rollout import rollout
 from src.data.normalise import OutcomeScaler, apply_outcome_scaler, fit_outcome_scaler, inverse_transform_outcomes
-from src.data.oxford_loader import clean_oxford, load_oxford_csv, select_features
+from src.data.oxford_loader import (
+    clean_oxford,
+    load_country_context_csv,
+    load_oxford_csv,
+    merge_country_context,
+    select_features,
+)
 from src.data.panel_windows import PanelWindows, build_country_index, make_windows
 from src.train.splits import time_split_window_indices
 
@@ -86,13 +92,35 @@ def build_test_windows(
     window_cfg = cfg["window"]
     split_cfg = cfg.get("split", {})
     norm_cfg = cfg.get("normalization", {})
+    context_cols = list(dataset_cfg.get("context_cols", []))
+    context_csv = dataset_cfg.get("country_context_csv", None)
+    split_no_future_overlap = bool(split_cfg.get("no_future_overlap", False))
 
     raw = load_oxford_csv(oxford_csv)
     cleaned = clean_oxford(
         raw,
         country_col=dataset_cfg.get("country_col", "CountryName"),
         date_col=dataset_cfg.get("date_col", "Date"),
+        country_code_col=dataset_cfg.get("country_code_col", "CountryCode"),
     )
+    if context_cols:
+        if not context_csv:
+            raise ValueError(
+                "dataset.context_cols is non-empty but dataset.country_context_csv is not set in config."
+            )
+        context_df = load_country_context_csv(context_csv)
+        cleaned, _ = merge_country_context(
+            panel_df=cleaned,
+            context_df=context_df,
+            context_cols=context_cols,
+            panel_country_col="country",
+            panel_country_code_col="country_code",
+            context_country_col=dataset_cfg.get("context_country_col", "country"),
+            context_country_code_col=dataset_cfg.get("context_country_code_col", "CountryCode"),
+            zscore=bool(dataset_cfg.get("context_zscore", True)),
+        )
+        state_cols = [*state_cols, *context_cols]
+    state_cols = list(dict.fromkeys(state_cols))
     state_cols_sel = [s for s in state_cols if s != "__dummy_state__"]
     panel_df = select_features(cleaned, policy_cols=policy_cols, outcome_cols=outcome_cols, state_cols=state_cols_sel)
 
@@ -122,6 +150,7 @@ def build_test_windows(
     train_idx, test_idx, _ = time_split_window_indices(
         windows.metadata,
         train_fraction=float(split_cfg.get("train_fraction", train_fraction)),
+        no_future_overlap=split_no_future_overlap,
     )
 
     train_windows = windows.subset(train_idx)

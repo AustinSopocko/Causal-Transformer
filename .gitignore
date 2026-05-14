@@ -38,3 +38,18 @@ Thumbs.db
 
 *.log
 
+
+.venv/
+data/covid/
+data/oxford/oxford_panel.csv
+results/**/*.png
+results/rq1/results_rq1.csv
+results/rq2/rq2_by_country.csv
+results/_smoke_*/
+results/overleaf*/
+project_submission*/
+supervisor_run_bundle*/
+submission_skeleton*/
+*.zip
+slurm-*.out
+slurm-*.err
